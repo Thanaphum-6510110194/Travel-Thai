@@ -1,4 +1,3 @@
-# app/models/campaign.py
 from pydantic import BaseModel, Field
 
 class CampaignRegistration(BaseModel):

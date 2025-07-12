@@ -1,52 +1,82 @@
-from datetime import timedelta
-from typing import Dict
 
+from app.services import province_service
+from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
 
-from app.auth.security import (ACCESS_TOKEN_EXPIRE_MINUTES,
-                               create_access_token, get_current_user,
-                               get_password_hash, verify_password)
+from app import crud
+from app.auth import security
+from app.database import get_db
 from app.models.user import Token, UserCreate, UserRead
+from fastapi import Body
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
-# In-memory user database for demonstration
-fake_users_db: Dict[str, Dict[str, str]] = {}
-
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
-async def register_user(user: UserCreate):
-    if user.username in fake_users_db:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already registered",
-        )
-    hashed_password = get_password_hash(user.password)
-    fake_users_db[user.username] = {
-        "username": user.username,
-        "email": user.email,
-        "hashed_password": hashed_password,
-    }
-    return UserRead(username=user.username, email=user.email)
+def register_user(
+    user: UserCreate = Body(...),
+    target_provinces: list = Body(...),
+    db: Session = Depends(get_db)
+):
+    db_user = crud.get_user_by_username(db, username=user.username)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    # Store target provinces in user record (assumes db_models.User has a field for this)
+    user_dict = user.dict()
+    user_dict["target_provinces"] = target_provinces
+    return crud.create_user(db=db, user=user_dict)
 
 @router.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = fake_users_db.get(form_data.username)
-    if not user or not verify_password(form_data.password, user["hashed_password"]):
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = crud.get_user_by_username(db, username=form_data.username)
+    if not user or not security.verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user["username"]}, expires_delta=access_token_expires
+    access_token = security.create_access_token(
+        data={"sub": user.username}, expires_delta=timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
 @router.get("/me", response_model=UserRead)
-async def read_users_me(current_user: dict = Depends(get_current_user)):
-    user_data = fake_users_db.get(current_user["username"])
-    if not user_data:
+def read_users_me(current_user: dict = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    user = crud.get_user_by_username(db, username=current_user["username"])
+    if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return UserRead(username=user_data["username"], email=user_data["email"])
+    return user
+
+@router.get("/provinces", response_model=list)
+def get_available_provinces():
+    return province_service.get_available_provinces_with_type()
+
+@router.get("/registrations", response_model=list)
+def get_registered_users(db: Session = Depends(get_db)):
+    users = db.query(crud.db_models.User).all()
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "email": u.email
+        } for u in users
+    ]
+
+@router.get("/tax-info")
+def get_tax_info():
+    primary = []
+    secondary = []
+    for province, info in province_service.PROVINCES_DB.items():
+        entry = {
+            "province": province,
+            "type": info["type"],
+            "tax_reduction": info["tax_reduction"]
+        }
+        if info["type"] == "เมืองหลัก":
+            primary.append(entry)
+        elif info["type"] == "เมืองรอง":
+            secondary.append(entry)
+    return {
+        "primary_cities": primary,
+        "secondary_cities": secondary
+    }

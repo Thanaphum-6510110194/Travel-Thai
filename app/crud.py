@@ -9,6 +9,13 @@ from .models import campaign as campaign_models
 def get_user_by_username(db: Session, username: str):
     return db.query(db_models.User).filter(db_models.User.username == username).first()
 
+def get_all_users(db: Session):
+    """
+    ADDED: Helper function to retrieve all users.
+    Used by the /users/registrations endpoint.
+    """
+    return db.query(db_models.User).all()
+
 def create_user(db: Session, user: user_models.UserCreate):
     hashed_password = security.get_password_hash(user.password)
     db_user = db_models.User(
